@@ -1,0 +1,86 @@
+name: Build APKs
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {app: admin, title: Scorified Admin, file: Scorified_Admin.html, color: "#e11d2e", id: com.scorified.admin}
+          - {app: viewer, title: Scorified Viewer, file: Scorified_Viewer.html, color: "#2563eb", id: com.scorified.viewer}
+    env:
+      APP: ${{ matrix.app }}
+      TITLE: ${{ matrix.title }}
+      FILE: ${{ matrix.file }}
+      COLOR: ${{ matrix.color }}
+      APPID: ${{ matrix.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Prepare web files, icon and splash
+        run: |
+          pip install pillow
+          mkdir -p www assets
+          python3 - <<'PY'
+          import os
+          from PIL import Image, ImageDraw, ImageFont
+          file, col, title = os.environ['FILE'], os.environ['COLOR'], os.environ['TITLE']
+          h = open(file, encoding='utf-8').read()
+          css = ('<meta name="theme-color" content="#000000"><style id="brand">'
+                 'html:root:root:root{--bg:#0a0a0a;--card:#151515;--tx:#f5f5f5;--mu:#a3a3a3;--bd:#2b2b2b;color-scheme:dark}'
+                 'h1{color:COL}button.p,.tabs .on{background:COL;border-color:COL;color:#fff}</style>').replace('COL', col)
+          assert '</head>' in h
+          open('www/index.html', 'w', encoding='utf-8').write(h.replace('</head>', css + '</head>', 1))
+          def font(s):
+              try:
+                  return ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', s)
+              except Exception:
+                  return ImageFont.load_default(s)
+          def mark(sz, rad):
+              im = Image.new('RGBA', (sz, sz), (0, 0, 0, 0))
+              d = ImageDraw.Draw(im)
+              c, r = sz // 2, int(sz * rad)
+              d.ellipse([c - r, c - r, c + r, c + r], fill=col)
+              q = int(r * .88)
+              d.ellipse([c - q, c - q, c + q, c + q], outline='white', width=max(4, sz // 90))
+              d.text((c, c), 'S', font=font(int(r * 1.25)), fill='white', anchor='mm')
+              return im
+          def onblack(sz, m):
+              b = Image.new('RGBA', (sz, sz), (0, 0, 0, 255))
+              b.alpha_composite(m)
+              return b
+          mark(1024, .26).save('assets/icon-foreground.png')
+          Image.new('RGBA', (1024, 1024), (0, 0, 0, 255)).save('assets/icon-background.png')
+          onblack(1024, mark(1024, .40)).save('assets/icon-only.png')
+          sp = onblack(2732, mark(2732, .11))
+          ImageDraw.Draw(sp).text((1366, 1366 + 420), title.upper(), font=font(150), fill='white', anchor='mm')
+          sp.save('assets/splash.png')
+          sp.save('assets/splash-dark.png')
+          PY
+      - name: Create Android project
+        run: |
+          npm init -y
+          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/splash-screen@6
+          npm i -D @capacitor/assets@3
+          cat > capacitor.config.json <<EOF
+          {"appId":"$APPID","appName":"$TITLE","webDir":"www","plugins":{"SplashScreen":{"launchShowDuration":1500,"backgroundColor":"#000000"}}}
+          EOF
+          npx cap add android
+          npx capacitor-assets generate --android
+          npx cap sync android
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "Scorified-$APP.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Scorified-${{ matrix.app }}-APK
+          path: Scorified-${{ matrix.app }}.apk
